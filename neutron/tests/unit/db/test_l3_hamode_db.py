@@ -14,6 +14,7 @@
 
 import mock
 from oslo_config import cfg
+import sqlalchemy as sa
 
 from neutron.api.rpc.handlers import l3_rpc
 from neutron.api.v2 import attributes
@@ -563,6 +564,74 @@ class L3HATestCase(L3HATestFramework):
              filter_by(router_id=router1['id']).delete())
             self.plugin.update_routers_states(
                 self.admin_ctx, states, self.agent1['host'])
+
+    def test_ha_network_deleted_if_no_ha_router_present_two_tenants(self):
+        # Create two routers in different tenants.
+        router1 = self._create_router()
+        router2 = self._create_router(tenant_id='tenant2')
+        nets_before = [net['name'] for net in
+                       self.core_plugin.get_networks(self.admin_ctx)]
+        # Check that HA networks created for each tenant
+        self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                      nets_before)
+        self.assertIn('HA network tenant %s' % router2['tenant_id'],
+                      nets_before)
+        # Delete router1
+        self.plugin.delete_router(self.admin_ctx, router1['id'])
+        nets_after = [net['name'] for net in
+                      self.core_plugin.get_networks(self.admin_ctx)]
+        # Check that HA network for tenant1 is deleted and for tenant2 is not.
+        self.assertNotIn('HA network tenant %s' % router1['tenant_id'],
+                         nets_after)
+        self.assertIn('HA network tenant %s' % router2['tenant_id'],
+                      nets_after)
+
+    def test_ha_network_is_not_delete_if_ha_router_is_present(self):
+        # Create 2 routers in one tenant and check if one is deleted, HA
+        # network still exists.
+        router1 = self._create_router()
+        router2 = self._create_router()
+        nets_before = [net['name'] for net in
+                       self.core_plugin.get_networks(self.admin_ctx)]
+        self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                      nets_before)
+        self.plugin.delete_router(self.admin_ctx, router2['id'])
+        nets_after = [net['name'] for net in
+                      self.core_plugin.get_networks(self.admin_ctx)]
+        self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                      nets_after)
+
+    def test_ha_network_delete_ha_and_non_ha_router(self):
+        # Create HA and non-HA router. Check after deletion HA router HA
+        # network is deleted.
+        router1 = self._create_router(ha=False)
+        router2 = self._create_router()
+        nets_before = [net['name'] for net in
+                       self.core_plugin.get_networks(self.admin_ctx)]
+        self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                      nets_before)
+        self.plugin.delete_router(self.admin_ctx, router2['id'])
+        nets_after = [net['name'] for net in
+                      self.core_plugin.get_networks(self.admin_ctx)]
+        self.assertNotIn('HA network tenant %s' % router1['tenant_id'],
+                         nets_after)
+
+    def test_ha_network_is_not_deleted_if_another_ha_router_is_created(self):
+        # If another router was created during deletion of current router,
+        # _delete_ha_network will fail with InvalidRequestError. Check that HA
+        # network won't be deleted.
+        router1 = self._create_router()
+        nets_before = [net['name'] for net in
+                       self.core_plugin.get_networks(self.admin_ctx)]
+        self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                      nets_before)
+        with mock.patch.object(self.plugin, '_delete_ha_network',
+                               side_effect=sa.exc.InvalidRequestError):
+            self.plugin.delete_router(self.admin_ctx, router1['id'])
+            nets_after = [net['name'] for net in
+                          self.core_plugin.get_networks(self.admin_ctx)]
+            self.assertIn('HA network tenant %s' % router1['tenant_id'],
+                          nets_after)
 
 
 class L3HAModeDbTestCase(L3HATestFramework):
